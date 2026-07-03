@@ -1,0 +1,9 @@
+requests
+tls-client
+colorama
+pystyle
+rich
+nodriver
+httpx
+psutil
+urllib3

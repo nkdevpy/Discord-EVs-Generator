@@ -1,0 +1,46 @@
+{
+    "threads": 1,
+    "cooldown": 1,
+    "provider_selection": "venumzmail",
+    "email_providers": {
+        "venumzmail": {
+            "enabled": true,
+            "api_key": "vz-api-key-here",
+            "api_base": "https://api.venumzmail.xyz",
+            "domains": [
+                "analgex.com",
+                "arewecookedd.com",
+                "analgex.gg",
+                "arewecooked.gg",
+                "bheekarirndi.org",
+                "chuchuchu.org",
+                "cutieong.life",
+                "gareebiontop.life",
+                "goontome.com",
+                "goontome.gg",
+                "larplarplarpsahur.com",
+                "niggasorus.in",
+                "peanutslover.com",
+                "piehentai.net",
+                "saygex.life",
+                "shinchankeakhrot.life",
+                "uwuvenumz.net",
+                "venumzmail.in",
+                "venumzmail.life",
+                "venumzmail.net",
+                "venumzmail.org",
+                "welovehomiesfor.life",
+                "weloveniggas.com",
+                "whayprotienconsumer.life"
+            ]
+        }
+    },
+    "proxy": {
+        "enabled": false,
+        "file": "input/proxies.txt"
+    },
+    "nopecha": {
+        "enabled": true,
+        "api_key": "nopecha_keyhere"
+    }
+}

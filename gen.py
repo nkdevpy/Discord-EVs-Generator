@@ -291,7 +291,7 @@ def loadorcreateconfig():
             "email_providers": {
                 "venumzmail": {
                     "enabled": True,
-                    "api_key": "vz-49b3c659-0cba-461d-ac5f-b5951c3ae388",
+                    "api_key": "vz-your-api-key-here",
                     "api_base": "https://api.venumzmail.xyz",
                     "domains": ["lickingpussy.online"]
                 }

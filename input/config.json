@@ -10,28 +10,13 @@
             "domains": [
                 "analgex.com",
                 "arewecookedd.com",
-                "analgex.gg",
-                "arewecooked.gg",
                 "bheekarirndi.org",
-                "chuchuchu.org",
-                "cutieong.life",
-                "gareebiontop.life",
                 "goontome.com",
                 "goontome.gg",
-                "larplarplarpsahur.com",
-                "niggasorus.in",
-                "peanutslover.com",
-                "piehentai.net",
-                "saygex.life",
-                "shinchankeakhrot.life",
-                "uwuvenumz.net",
                 "venumzmail.in",
                 "venumzmail.life",
                 "venumzmail.net",
-                "venumzmail.org",
-                "welovehomiesfor.life",
-                "weloveniggas.com",
-                "whayprotienconsumer.life"
+                "venumzmail.org"
             ]
         }
     },
@@ -41,6 +26,6 @@
     },
     "nopecha": {
         "enabled": true,
-        "api_key": "nopecha_keyhere"
+        "api_key": "nopecha-key-here"
     }
 }

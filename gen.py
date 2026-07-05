@@ -28,6 +28,8 @@ import urllib3
 import base64
 import logging
 import ctypes; ctypes.windll.kernel32.SetConsoleTitleW("venumzmail.xyz")
+import subprocess
+import psutil
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings('ignore')
@@ -101,7 +103,7 @@ def getcurrentnopechakey() -> Optional[str]:
             nopechaconfig = config.get("nopecha", {})
             if nopechaconfig.get("enabled", False) and nopechaconfig.get("api_key"):
                 key = nopechaconfig.get("api_key")
-                if key and key != "YOUR_NOPECHA_API_KEY_HERE":
+                if key and key != "nopecha-key-here":
                     return key
     except Exception:
         pass
@@ -136,7 +138,6 @@ def injectnopechakey(apikey: str) -> bool:
         
         storageinitpath = nopechadirext / "storage_init.js"
         storageinitcode = f"""
-// Auto-generated storage initialization for NopeCHA extension
 (function() {{
   const nopecha_api_key = '{apikey}';
   chrome.storage.local.set({{'nopecha_key': nopecha_api_key}}, function() {{
@@ -180,8 +181,61 @@ def downloadnopechaext() -> Optional[Path]:
         log.warning(f"NopeCHA download error: {e}")
         return None
 
-SOLVERURL = "http://127.0.0.1:5003"
-SOLVERTIMEOUT = 120
+def generatefingerprint() -> Optional[str]:
+    try:
+        headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36"
+        }
+        response = requests.get(
+            "https://discordapp.com/api/v9/experiments",
+            headers=headers,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            fingerprint = data.get('fingerprint')
+            if fingerprint:
+                return fingerprint
+        return None
+    except Exception as e:
+        log.debug(f"Fingerprint generation error: {e}")
+        return None
+
+async def injectfingerprinttopage(page, fingerprint: str) -> bool:
+    if not fingerprint:
+        return False
+    
+    installationid = hashlib.md5(fingerprint.encode()).hexdigest()[:16]
+    
+    js = f'''
+    (() => {{
+        try {{
+            const fingerprintdata = {{
+                fingerprint: '{fingerprint}',
+                installation: '{installationid}',
+                timestamp: {int(time.time()) * 1000}
+            }};
+            
+            window.__discord_fp_data = fingerprintdata;
+            window.localStorage.setItem('discord_fp_data', JSON.stringify(fingerprintdata));
+            window.localStorage.setItem('discord_fingerprint', '{fingerprint}');
+            window.localStorage.setItem('discord_installation_id', '{installationid}');
+            
+            return true;
+        }} catch (e) {{
+            return false;
+        }}
+    }})();
+    '''
+    try:
+        return await page.evaluate(js)
+    except Exception as e:
+        log.debug(f"Fingerprint injection error: {e}")
+        return False
+
+solverurl = "http://127.0.0.1:5003"
+solvertimeout = 120
 
 def sendcaptchatosolver(taskid: str, pageurl: str = "https://discord.com/register", captchatype: str = "unknown") -> Optional[str]:
     try:
@@ -191,7 +245,7 @@ def sendcaptchatosolver(taskid: str, pageurl: str = "https://discord.com/registe
             'page_url': pageurl
         }
         
-        response = requests.post(f'{SOLVERURL}/api/solve', json=payload, timeout=5)
+        response = requests.post(f'{solverurl}/api/solve', json=payload, timeout=5)
         if response.status_code not in [200, 202]:
             log.warning(f"Solver queue failed: {response.status_code}")
             return None
@@ -200,9 +254,9 @@ def sendcaptchatosolver(taskid: str, pageurl: str = "https://discord.com/registe
         
         starttime = time.time()
         pollinterval = 2
-        while time.time() - starttime < SOLVERTIMEOUT:
+        while time.time() - starttime < solvertimeout:
             try:
-                resultresponse = requests.get(f'{SOLVERURL}/api/result/{taskid}', timeout=5)
+                resultresponse = requests.get(f'{solverurl}/api/result/{taskid}', timeout=5)
                 
                 if resultresponse.status_code == 200:
                     data = resultresponse.json()
@@ -224,12 +278,12 @@ def sendcaptchatosolver(taskid: str, pageurl: str = "https://discord.com/registe
 
 def checksolverhealth() -> bool:
     try:
-        response = requests.get(f'{SOLVERURL}/api/status', timeout=5)
+        response = requests.get(f'{solverurl}/api/status', timeout=5)
         return response.status_code == 200
     except:
         return False
 
-JSUTILS = '''
+jsutils = '''
 (() => {
     if (window.utils) return;
     
@@ -268,22 +322,239 @@ JSUTILS = '''
 })();
 '''
 
-LOCK = threading.Lock()
-SESSIONTARGET = 0
-SESSIONCREATED = 0
-SESSIONSTOP = False
-ACTIVEWORKERS = 0
-WORKERLOCK = threading.Lock()
-COOLDOWNSECONDS = 60
+lock = threading.Lock()
+sessiontarget = 0
+sessioncreated = 0
+sessionstop = False
+activeworkers = 0
+workerlock = threading.Lock()
+cooldownseconds = 60
 
-CONFIGDIR = Path('input')
-CONFIGPATH = CONFIGDIR / 'config.json'
-OUTPUTDIR = Path('output')
-OUTPUTDIR.mkdir(exist_ok=True)
+configdir = Path('input')
+configpath = configdir / 'config.json'
+outputdir = Path('output')
+outputdir.mkdir(exist_ok=True)
+
+mullvadstats = {
+    'total_rotations': 0,
+    'failed_rotations': 0,
+    'ip_changes': 0,
+    'last_ip': None,
+    'last_rotation_time': None,
+}
+
+def checkmullvadinstalled() -> bool:
+    try:
+        result = subprocess.run(
+            ['mullvad', 'version'],
+            capture_output=True, text=True, timeout=10
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+def mullvadkillstuckprocess(timeout: int = 30):
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+            try:
+                if 'mullvad' in proc.info['name'].lower():
+                    runtime = time.time() - proc.info['create_time']
+                    if runtime > timeout:
+                        proc.kill()
+                        log.warning(f"Killed stuck mullvad process (PID: {proc.pid})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception:
+        pass
+
+def mullvadstatus(timeout: int = 10) -> str:
+    try:
+        result = subprocess.run(
+            ['mullvad', 'status'],
+            capture_output=True, text=True, timeout=timeout
+        )
+        status = result.stdout.strip()
+        status = re.sub(r'Visible location:[^\r\n]*', '', status, flags=re.IGNORECASE)
+        status = re.sub(r'IPv4:[^\r\n]*', '', status, flags=re.IGNORECASE)
+        status = re.sub(r'\s{2,}', ' ', status).strip()
+        return status
+    except subprocess.TimeoutExpired:
+        log.warning("mullvad status command timed out")
+        mullvadkillstuckprocess()
+        return "timeout"
+    except Exception:
+        return "unknown"
+
+def mullvaddisconnect(timeout: int = 15, max_attempts: int = 15):
+    try:
+        subprocess.run(
+            ['mullvad', 'disconnect'],
+            capture_output=True, text=True, timeout=10
+        )
+        start_time = time.time()
+        attempts = 0
+        
+        while time.time() - start_time < timeout and attempts < max_attempts:
+            status = mullvadstatus(timeout=5)
+            if "Disconnected" in status:
+                log.info("Mullvad disconnected successfully")
+                return
+            time.sleep(0.5)
+            attempts += 1
+        
+        if attempts >= max_attempts:
+            log.warning(f"Disconnect verification timed out after {attempts} attempts")
+    except Exception as e:
+        log.warning(f"Mullvad disconnect error: {e}")
+        mullvadkillstuckprocess()
+
+def mullvadconnect(country: str = "us", timeout: int = 30, max_attempts: int = 30) -> bool:
+    try:
+        result = subprocess.run(
+            ['mullvad', 'relay', 'set', 'location', country],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            log.warning(f"Failed to set Mullvad location to {country}")
+            return False
+
+        subprocess.run(
+            ['mullvad', 'relay', 'set', 'tunnel-protocol', 'wireguard'],
+            capture_output=True, text=True, timeout=10
+        )
+
+        subprocess.run(
+            ['mullvad', 'connect'],
+            capture_output=True, text=True, timeout=10
+        )
+
+        start_time = time.time()
+        attempts = 0
+        
+        while time.time() - start_time < timeout and attempts < max_attempts:
+            status = mullvadstatus(timeout=5)
+            
+            if "Connected" in status:
+                log.success(f"Mullvad connected to {country}")
+                return True
+            
+            if "Connecting" in status:
+                wait_time = 0.5 if attempts < 5 else 1.0
+                time.sleep(wait_time)
+            else:
+                log.debug(f"Mullvad status: {status}")
+                time.sleep(1)
+            
+            attempts += 1
+        
+        final_status = mullvadstatus(timeout=5)
+        log.error(f"Mullvad connection timeout. Final status: {final_status}")
+        return False
+        
+    except subprocess.TimeoutExpired as e:
+        log.error(f"Mullvad command timed out: {e}")
+        mullvadkillstuckprocess()
+        return False
+    except Exception as e:
+        log.error(f"Mullvad connect error: {e}")
+        return False
+
+def mullvadgetip(timeout: int = 15, attempts: int = 3) -> Optional[str]:
+    providers = [
+        ('https://am.i.mullvad.net/json', 'ip'),
+        ('https://api.ipify.org?format=json', 'ip'),
+        ('https://ifconfig.me/all.json', 'ip_addr'),
+    ]
+    
+    for attempt in range(attempts):
+        for url, key in providers:
+            try:
+                resp = requests.get(url, timeout=timeout)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    ip = data.get(key, data.get('ip', None))
+                    if ip:
+                        return ip
+            except Exception:
+                continue
+        
+        if attempt < attempts - 1:
+            time.sleep(1)
+    
+    return None
+
+def mullvadrotate(country: str = "us", max_retries: int = 3, min_rotation_delay: int = 2) -> bool:
+    mullvadstats['total_rotations'] += 1
+    
+    if mullvadstats['last_rotation_time']:
+        elapsed = time.time() - mullvadstats['last_rotation_time']
+        if elapsed < min_rotation_delay:
+            time.sleep(min_rotation_delay - elapsed)
+    
+    old_ip = mullvadstats['last_ip']
+    
+    for attempt in range(max_retries):
+        try:
+            mullvaddisconnect(timeout=15)
+            time.sleep(1)
+            
+            if not mullvadconnect(country, timeout=30):
+                if attempt < max_retries - 1:
+                    log.warning(f"Rotation attempt {attempt + 1}/{max_retries} failed, retrying...")
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    log.error("Mullvad rotation failed after all retries")
+                    mullvadstats['failed_rotations'] += 1
+                    return False
+            
+            time.sleep(1)
+            new_ip = mullvadgetip(timeout=15)
+            
+            if new_ip:
+                mullvadstats['last_ip'] = new_ip
+                mullvadstats['last_rotation_time'] = time.time()
+                
+                if old_ip and new_ip == old_ip:
+                    log.warning(f"IP did not change: {log.maskip(new_ip)} (retry {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        mullvaddisconnect()
+                        continue
+                    else:
+                        mullvadstats['failed_rotations'] += 1
+                        return False
+                else:
+                    if old_ip:
+                        log.success(f"IP rotated: {log.maskip(old_ip)} → {log.maskip(new_ip)}")
+                    else:
+                        log.success(f"VPN connected — IP: {log.maskip(new_ip)}")
+                    mullvadstats['ip_changes'] += 1
+                    return True
+            else:
+                log.warning(f"Could not verify IP (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    mullvadstats['failed_rotations'] += 1
+                    return False
+        
+        except Exception as e:
+            log.error(f"Rotation error: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                mullvadstats['failed_rotations'] += 1
+                return False
+    
+    return False
+
+mullvadavailable = False
 
 def loadorcreateconfig():
-    if not CONFIGPATH.exists():
-        CONFIGDIR.mkdir(exist_ok=True)
+    if not configpath.exists():
+        configdir.mkdir(exist_ok=True)
         templateconfig = {
             "threads": 3,
             "cooldown": 15,
@@ -293,22 +564,33 @@ def loadorcreateconfig():
                     "enabled": True,
                     "api_key": "vz-your-api-key-here",
                     "api_base": "https://api.venumzmail.xyz",
-                    "domains": ["lickingpussy.online"]
+                    "domains": ["lickingpussy.online", "bomboclato.store", "analgex.com", "arewecookedd.com", "goontome.com"]
                 }
             },
             "proxy": {"enabled": False, "file": "input/proxies.txt"},
-            "nopecha": {"enabled": True, "api_key": "sn2duf8eygk1cql9"}
+            "nopecha": {"enabled": True, "api_key": "nopecha-key-here"},
+            "mullvad": {"enabled": False, "country": "us"}
         }
-        with open(CONFIGPATH, 'w', encoding='utf-8') as f:
+        with open(configpath, 'w', encoding='utf-8') as f:
             json.dump(templateconfig, f, indent=4)
-        print(f"\n\033[93m[config]\033[0m Config created at: {CONFIGPATH}")
+        print(f"\n\033[93m[config]\033[0m Config created at: {configpath}")
         sys.exit(0)
-    with open(CONFIGPATH, 'r', encoding='utf-8') as f:
+    with open(configpath, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 config = loadorcreateconfig()
-THREADCOUNT = config.get("threads", 1)
-COOLDOWNSECONDS = config.get("cooldown", 10)
+threadcount = config.get("threads", 1)
+cooldownseconds = config.get("cooldown", 10)
+
+mullvad_config = config.get("mullvad", {})
+if mullvad_config.get("enabled", False):
+    if checkmullvadinstalled():
+        mullvadavailable = True
+        threadcount = 1
+        print(f"\033[92m[info]\033[0m Mullvad VPN enabled (country: {mullvad_config.get('country', 'us')})")
+    else:
+        print("\033[91m[error]\033[0m Mullvad CLI not found! Install Mullvad VPN or disable it in config.")
+        sys.exit(1)
 
 if sys.platform == 'win32':
     import ctypes
@@ -318,16 +600,17 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
-GRAY = '\033[90m'
-GREEN = '\033[92m'
-CYAN = '\033[96m'
-RED = '\033[91m'
-YELLOW = '\033[93m'
-WHITE = '\033[97m'
-RESET = '\033[0m'
-BLUE = '\033[94m'
-PURPLE = '\033[95m'
-ORANGE = '\033[38;5;208m'
+gray = '\033[90m'
+green = '\033[92m'
+cyan = '\033[96m'
+red = '\033[91m'
+yellow = '\033[93m'
+white = '\033[97m'
+reset = '\033[0m'
+blue = '\033[94m'
+purple = '\033[95m'
+magenta = '\033[95m'
+orange = '\033[38;5;208m'
 
 class Logger:
     def __init__(self):
@@ -336,7 +619,7 @@ class Logger:
     def _printinline(self, emoji: str, tag: str, tagcolor: str, message: str):
         ts = datetime.now().strftime('%H:%M:%S')
         with self._lock:
-            line = f"{GRAY}[{ts}]{RESET} {tagcolor}{tag:<10}{RESET} {GRAY}│{RESET} {WHITE}{message}{RESET}\n"
+            line = f"{gray}[{ts}]{reset} {tagcolor}{tag:<10}{reset} {gray}│{reset} {white}{message}{reset}\n"
             sys.stdout.write(line)
             sys.stdout.flush()
 
@@ -350,36 +633,53 @@ class Logger:
     def masktoken(self, token: str) -> str:
         return token[:20] + '***' if len(token) > 20 else token
 
+    def maskip(self, ip: str) -> str:
+        if not ip:
+            return ip
+        if ':' in ip:
+            parts = ip.split(':')
+            if len(parts) >= 3:
+                masked_middle = ':'.join('****' for _ in parts[1:-1])
+                return f"{parts[0]}:{masked_middle}:{parts[-1]}"
+            return ':'.join(parts[:1] + ['****'])
+        if '.' in ip:
+            parts = ip.split('.')
+            if len(parts) == 4:
+                return f"{parts[0]}.***.***.{parts[3]}"
+            if len(parts) == 2:
+                return f"{parts[0]}.***"
+        return re.sub(r'[0-9]', '*', ip)
+
     def hunt(self, message: str):
-        self._printinline("", "HUNT", CYAN, message)
+        self._printinline("", "HUNT", cyan, message)
 
     def solved(self, message: str):
-        self._printinline("", "SOLVED", PURPLE, message)
+        self._printinline("", "SOLVED", magenta, message)
 
     def warning(self, message: str):
-        self._printinline("", "WARNING", YELLOW, message)
+        self._printinline("", "WARNING", yellow, message)
 
     def error(self, message: str):
-        self._printinline("", "ERROR", RED, message)
+        self._printinline("", "ERROR", red, message)
 
     def info(self, message: str):
-        self._printinline("", "INFO", BLUE, message)
+        self._printinline("", "INFO", blue, message)
 
     def success(self, message: str):
-        self._printinline("", "SUCCESS", GREEN, message)
+        self._printinline("", "SUCCESS", green, message)
 
     def debug(self, message: str):
-        self._printinline("", "DEBUG", GRAY, message)
+        self._printinline("", "DEBUG", gray, message)
 
     def batch(self, message: str):
-        self._printinline("", "BATCH", CYAN, message)
+        self._printinline("", "BATCH", cyan, message)
 
     def tokenstatus(self, status: str):
-        colormap = {'VALID': GREEN, 'LOCKED': YELLOW, 'INVALID': RED}
-        color = colormap.get(status, WHITE)
+        colormap = {'VALID': green, 'LOCKED': yellow, 'INVALID': red}
+        color = colormap.get(status, white)
         ts = datetime.now().strftime('%H:%M:%S')
         with self._lock:
-            line = f"{color}TOKEN{RESET:<7} {GRAY}│{RESET} {color}[{status}]{RESET} {GRAY}[{ts}]{RESET}\n"
+            line = f"{color}TOKEN{reset:<7} {gray}│{reset} {color}[{status}]{reset} {gray}[{ts}]{reset}\n"
             sys.stdout.write(line)
             sys.stdout.flush()
 
@@ -408,7 +708,8 @@ class VenumzMailAPI:
         payload = {
             "count": 1,
             "username": username,
-            "domain": usedomain
+            "domain": usedomain,
+            "type": "public"
         }
         
         try:
@@ -424,8 +725,7 @@ class VenumzMailAPI:
                                 "success": True,
                                 "email": email,
                                 "username": username,
-                                "domain": usedomain,
-                                "full_response": data
+                                "domain": usedomain
                             }
                         elif data.get("message") == "Email created successfully":
                             email = f"{username}@{usedomain}"
@@ -442,6 +742,15 @@ class VenumzMailAPI:
                                 "username": username,
                                 "domain": usedomain
                             }
+                        elif data.get("inboxes") and len(data["inboxes"]) > 0:
+                            email = data["inboxes"][0].get("email")
+                            if email:
+                                return {
+                                    "success": True,
+                                    "email": email,
+                                    "username": username,
+                                    "domain": usedomain
+                                }
                         else:
                             email = f"{username}@{usedomain}"
                             return {
@@ -593,12 +902,12 @@ def checktoken(token: str, proxyconfig: Dict = None) -> str:
 def saveaccounttofile(email: str, password: str, token: str, status: str):
     try:
         if status == 'VALID':
-            outputfile = OUTPUTDIR / "valid.txt"
+            outputfile = outputdir / "valid.txt"
         elif status == 'LOCKED':
-            outputfile = OUTPUTDIR / "locked.txt"
+            outputfile = outputdir / "locked.txt"
         else:
-            outputfile = OUTPUTDIR / "invalid.txt"
-        with LOCK:
+            outputfile = outputdir / "invalid.txt"
+        with lock:
             with open(outputfile, 'a', encoding='utf-8') as f:
                 f.write(f"{email}:{password}:{token}\n")
         log.success(f"Saved to {outputfile.name}")
@@ -731,7 +1040,7 @@ async def fillregistrationform(page, email: str, displayname: str, username: str
         await asyncio.sleep(0.1)
         
         try:
-            await page.evaluate(JSUTILS)
+            await page.evaluate(jsutils)
             await asyncio.sleep(0.1)
             result = await page.evaluate('window.utils.clickAllCheckboxes()')
             if result and result.get('clicked', 0) > 0:
@@ -947,14 +1256,14 @@ def loadproxies(config: dict) -> list:
         log.error(f"Error loading proxies: {e}")
     return []
 
-PROXYLIST = []
-PROXYLISTLOCK = threading.Lock()
+proxylist = []
+proxylistlock = threading.Lock()
 
 def getrandomproxy() -> Optional[Dict]:
-    with PROXYLISTLOCK:
-        if not PROXYLIST:
+    with proxylistlock:
+        if not proxylist:
             return None
-        return random.choice(PROXYLIST)
+        return random.choice(proxylist)
 
 async def verifyemailvenumzmail(email: str, apikey: str, browser, token: str, domain: str = None, apibase: str = None, timeout: int = 60) -> bool:
     api = VenumzMailAPI(apikey=apikey, domain=domain, apibase=apibase)
@@ -1062,18 +1371,30 @@ async def verifyemailwithurl(browser, verifyurl: str, token: str, timeout: int =
         return False
 
 async def worker(workerid: int, proxyconfig: Dict = None):
-    global SESSIONCREATED, SESSIONSTOP, ACTIVEWORKERS
+    global sessioncreated, sessionstop, activeworkers
 
-    if SESSIONSTOP:
+    if sessionstop:
         return
 
-    with WORKERLOCK:
-        ACTIVEWORKERS += 1
+    with workerlock:
+        activeworkers += 1
 
     browser = None
     tempprofile = None
 
     try:
+        if mullvadavailable:
+            country = config.get("mullvad", {}).get("country", "us")
+            if not mullvadrotate(country):
+                log.error("Mullvad rotate failed, skipping")
+                return
+
+        fingerprint = generatefingerprint()
+        if fingerprint:
+            log.success(f"Fingerprint generated: {fingerprint[:20]}...")
+        else:
+            log.warning("Could not generate fingerprint, continuing without")
+
         firstnames = ['Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Sam', 'Blake', 'Drew', 'Avery', 'Jamie', 'Parker', 'Cameron', 'Dakota', 'Skyler', 'Quinn', 'Reese', 'Sage', 'River', 'Phoenix', 'Devon', 'Adrian', 'Bailey', 'Chase', 'Dakota', 'Ellis', 'Finley', 'Gray', 'Harper', 'Indigo', 'Jackie', 'Kennedy', 'Logan', 'Morgan', 'Noah', 'Ocean', 'Paris', 'Quinn', 'Robin', 'Sage', 'Taylor', 'Union', 'Vale', 'Wade', 'Xander', 'York', 'Zephyr', 'Aaron', 'Benjamin', 'Christopher', 'Daniel', 'Edward', 'Frank', 'George', 'Henry', 'Isaac', 'James', 'Kevin', 'Leonard', 'Michael', 'Nathan', 'Oliver', 'Patrick', 'Quinn', 'Robert', 'Steven', 'Thomas', 'Ulysses', 'Victor', 'William', 'Xavier', 'Yuki', 'Zachary', 'Alice', 'Bella', 'Charlotte', 'Diana', 'Elena', 'Fiona', 'Grace', 'Hannah', 'Iris', 'Jessica', 'Katherine', 'Laura', 'Michelle', 'Nancy', 'Olivia', 'Paige', 'Quinley', 'Rachel', 'Sophia', 'Tessa', 'Ursula', 'Victoria', 'Wendy', 'Ximena', 'Yasmine', 'Zoe']
         surnames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Wilson', 'Anderson', 'Taylor', 'Thomas', 'Moore', 'Jackson', 'Martin', 'Lee', 'Perez', 'Thompson', 'White', 'Harris', 'Sanchez', 'Clark', 'Ramirez', 'Lewis', 'Robinson', 'Walker', 'Young', 'Allen', 'King', 'Wright', 'Lopez', 'Hill', 'Scott', 'Green', 'Adams', 'Nelson', 'Carter', 'Roberts', 'Edwards', 'Collins', 'Reeves', 'Morris', 'Murphy', 'Rogers', 'Morgan', 'Peterson', 'Cooper', 'Reed', 'Bell', 'Gomez', 'Murray', 'Freeman', 'Wells', 'Webb', 'Simpson', 'Stevens', 'Tucker', 'Porter', 'Hunter', 'Hicks', 'Crawford', 'Henry', 'Boyd', 'Mason', 'Moreno', 'Kennedy', 'Warren', 'Dixon', 'Ramos', 'Reeves', 'Burns', 'Gordon', 'Shaw', 'Holmes', 'Rice', 'Robertson', 'Hunt', 'Black', 'Daniels', 'Palmer', 'Mills', 'Nicholson', 'Grant', 'Knight', 'Ferguson', 'Stone', 'Hawkins', 'Dunn', 'Perkins', 'Hudson', 'Spencer', 'Gardner', 'Stephens', 'Payne', 'Pierce', 'Berry', 'Matthews', 'Arnold', 'Wagner', 'Willis', 'Ray', 'Watkins', 'Olson', 'Carroll', 'Duncan', 'Snyder', 'Hart', 'Cunningham', 'Knight', 'Chase', 'Wyatt']
         
@@ -1086,7 +1407,7 @@ async def worker(workerid: int, proxyconfig: Dict = None):
         
         email, emailpassword, emailtoken, emailuuid, emailprovider = getemailfromprovider(config)
         if not email:
-            log.error(f"Failed to get email")
+            log.error("Failed to get email")
             return
         
         accountpassword = emailpassword or generateformpassword(10)
@@ -1131,8 +1452,15 @@ async def worker(workerid: int, proxyconfig: Dict = None):
         
         page = await browser.get("https://discord.com/register")
         if not page:
-            log.error(f"Could not get page")
+            log.error("Could not get page")
             return
+
+        if fingerprint:
+            injected = await injectfingerprinttopage(page, fingerprint)
+            if injected:
+                log.success("Fingerprint injected into page")
+            else:
+                log.warning("Fingerprint injection failed")
         
         for _ in range(30):
             try:
@@ -1146,15 +1474,15 @@ async def worker(workerid: int, proxyconfig: Dict = None):
 
         success = await fillregistrationform(page, email, displayname, discordusername, accountpassword)
         if not success:
-            log.error(f"Form fill failed")
+            log.error("Form fill failed")
             return
         
         created = await waitforaccountcreation(page)
         
         if created:
-            log.solved(f"Account created!")
+            log.solved("Account created!")
         else:
-            log.error(f"Creation failed")
+            log.error("Creation failed")
             return
         
         token = await waitfordiscordtoken(page, email=email, password=accountpassword, proxyconfig=proxyconfig)
@@ -1177,28 +1505,28 @@ async def worker(workerid: int, proxyconfig: Dict = None):
                 email, apikey, browser, token, domain, apibase, timeout=60
             )
             if verified:
-                log.success(f"Email verified!")
+                log.success("Email verified!")
             else:
-                log.warning(f"Email verification failed")
-                unverifiedfile = OUTPUTDIR / "unverified.txt"
-                with LOCK:
+                log.warning("Email verification failed")
+                unverifiedfile = outputdir / "unverified.txt"
+                with lock:
                     with open(unverifiedfile, 'a', encoding='utf-8') as f:
                         f.write(f"{email}:{accountpassword}:{token}\n")
-                log.info(f"Saved unverified account to unverified.txt")
+                log.info("Saved unverified account to unverified.txt")
             
             result = checktoken(token, proxyconfig)
             log.tokenstatus(result)
             saveaccounttofile(email, accountpassword, token, result)
 
-            with LOCK:
-                SESSIONCREATED += 1
-                creatednow = SESSIONCREATED
+            with lock:
+                sessioncreated += 1
+                creatednow = sessioncreated
 
             log.success(f"Account #{creatednow} created")
             
-            if SESSIONTARGET > 0 and creatednow >= SESSIONTARGET:
-                with LOCK:
-                    SESSIONSTOP = True
+            if sessiontarget > 0 and creatednow >= sessiontarget:
+                with lock:
+                    sessionstop = True
         else:
             pass
             
@@ -1216,36 +1544,36 @@ async def worker(workerid: int, proxyconfig: Dict = None):
                 shutil.rmtree(tempprofile, ignore_errors=True)
             except:
                 pass
-        with WORKERLOCK:
-            ACTIVEWORKERS -= 1
+        with workerlock:
+            activeworkers -= 1
 
 async def batchcooldown(batchsize: int, accountscreated: int):
     if accountscreated == 0:
         return
-    for remaining in range(COOLDOWNSECONDS, 0, -1):
+    for remaining in range(cooldownseconds, 0, -1):
         mins, secs = divmod(remaining, 60)
-        print(f"\r{YELLOW}[BATCH] ➜ {RESET}Next batch in: {CYAN}{mins:02d}:{secs:02d}{RESET} ", end='', flush=True)
+        print(f"\r{yellow}[BATCH] ➜ {reset}Next batch in: {cyan}{mins:02d}:{secs:02d}{reset} ", end='', flush=True)
         await asyncio.sleep(1)
     print()
 
 async def runworkers():
-    global SESSIONTARGET, SESSIONCREATED, SESSIONSTOP, PROXYLIST
+    global sessiontarget, sessioncreated, sessionstop, proxylist
     
     allproxies = loadproxies(config)
-    with PROXYLISTLOCK:
-        PROXYLIST = allproxies if allproxies else []
+    with proxylistlock:
+        proxylist = allproxies if allproxies else []
     
-    while not SESSIONSTOP:
-        with LOCK:
-            if SESSIONTARGET > 0 and SESSIONCREATED >= SESSIONTARGET:
-                SESSIONSTOP = True
+    while not sessionstop:
+        with lock:
+            if sessiontarget > 0 and sessioncreated >= sessiontarget:
+                sessionstop = True
                 break
         
-        accountsbefore = SESSIONCREATED
-        remaining = SESSIONTARGET - SESSIONCREATED if SESSIONTARGET > 0 else THREADCOUNT
-        batchsize = min(THREADCOUNT, remaining) if SESSIONTARGET > 0 else THREADCOUNT
+        accountsbefore = sessioncreated
+        remaining = sessiontarget - sessioncreated if sessiontarget > 0 else threadcount
+        batchsize = min(threadcount, remaining) if sessiontarget > 0 else threadcount
         
-        if batchsize <= 0 and SESSIONTARGET > 0:
+        if batchsize <= 0 and sessiontarget > 0:
             break
         
         tasks = []
@@ -1258,38 +1586,38 @@ async def runworkers():
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         
-        accountscreated = SESSIONCREATED - accountsbefore
+        accountscreated = sessioncreated - accountsbefore
         
-        if SESSIONTARGET > 0:
-            if SESSIONCREATED < SESSIONTARGET:
+        if sessiontarget > 0:
+            if sessioncreated < sessiontarget:
                 await batchcooldown(batchsize, accountscreated)
         else:
             await batchcooldown(batchsize, accountscreated)
         
         await asyncio.sleep(0.1)
     
-    log.success(f"Completed! Created {SESSIONCREATED} account(s)")
+    log.success(f"Completed! Created {sessioncreated} account(s)")
 
 def showvenombanner():
-    banner = f"""{BLUE}
+    banner = f"""{blue}
                                                                        
                                                                        
 ██  ██ ██████ ███  ██ ██  ██ ██▄  ▄██ ██████ ██▄  ▄██ ▄████▄ ██ ██     
 ██▄▄██ ██▄▄   ██ ▀▄██ ██  ██ ██ ▀▀ ██  ▄▄▀▀  ██ ▀▀ ██ ██▄▄██ ██ ██     
- ▀██▀  ██▄▄▄▄ ██   ██ ▀████▀ ██    ██ ██████ ██    ██ ██  ██ ██ ██████{RESET}
-{BLUE}https://venumzmail.xyz{RESET}
+ ▀██▀  ██▄▄▄▄ ██   ██ ▀████▀ ██    ██ ██████ ██    ██ ██  ██ ██ ██████{reset}
+{blue}https://venumzmail.xyz{reset}
 """
     print(banner)
 
 async def main():
-    global SESSIONTARGET
+    global sessiontarget
     
     showvenombanner()
     
     if not checksolverhealth():
         log.warning("Local Solver not detected!")
         log.info("Start solver: python solver_v2.py")
-        usesolver = input(f"{WHITE}Continue without solver? [y/n]: {RESET}").strip().lower() == 'y'
+        usesolver = input(f"{white}Continue without solver? [y/n]: {reset}").strip().lower() == 'y'
         if not usesolver:
             return
     else:
@@ -1297,18 +1625,18 @@ async def main():
     
     while True:
         try:
-            count = input(f"{WHITE}Accounts to create (0=infinite): {RESET}").strip()
+            count = input(f"{white}Accounts to create (0=infinite): {reset}").strip()
             if count.isdigit():
-                SESSIONTARGET = int(count)
+                sessiontarget = int(count)
                 break
         except:
             pass
     
     print()
-    if SESSIONTARGET == 0:
+    if sessiontarget == 0:
         log.info("Running in infinite mode")
     else:
-        log.info(f"Target: {SESSIONTARGET} accounts")
+        log.info(f"Target: {sessiontarget} accounts")
     print()
     
     downloadnopechaext()
@@ -1328,6 +1656,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print(f"\n{YELLOW}Stopped{RESET}")
+        print(f"\n{yellow}Stopped{reset}")
     except Exception as e:
         log.error(f"Error: {e}")

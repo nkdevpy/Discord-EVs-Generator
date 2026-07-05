@@ -3,7 +3,7 @@
 
 https://github.com/nkdevofficial/Discord-Account-Generator
 
-a discord account creator that uses venumzmail for temporary emails and nopecha for captcha solving
+a discord account creator that uses venumzmail for temporary emails and nopecha for captcha solving and mullvad auto rotate 
 
 ## how to use
 

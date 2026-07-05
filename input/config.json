@@ -27,5 +27,9 @@
     "nopecha": {
         "enabled": true,
         "api_key": "nopecha-key-here"
+    },
+    "mullvad": {
+        "enabled": true,
+        "country": "cn"
     }
 }

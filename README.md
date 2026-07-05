@@ -16,7 +16,7 @@ https://github.com/nkdevpy/Discord-EVs-Generator
 ## Api keys needed
 
 - VenumZmail api key from https://venumzmail.xyz
-- Nopecha api key from https://nopecha.com
+- NopeCHA api key from https://nopecha.com
 
 ## Proxy Setup (Optional)
 

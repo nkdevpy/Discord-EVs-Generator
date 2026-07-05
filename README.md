@@ -35,9 +35,9 @@ output/unverified.txt - email not verified
 - python 3.8+
 - brave browser (or chrome)
 
-## disclaimer
+## Disclamier
 
-for educational purposes only. use at your own risk.
+This tool is for educational purposes only. The developer is not responsible for any misuse, violations of Discord’s Terms of Service, or potential bans. Use at your own risk.
 
 ## contact
 discord: nkdev.official or nkdevv_alt

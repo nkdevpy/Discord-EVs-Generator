@@ -1,7 +1,7 @@
 # Discord Account Generator
 # https://venumzmail.xyz 
 
-https://github.com/nkdevofficial/Discord-Account-Generator
+https://github.com/nkdevpy/Discord-EVs-Generator
 
 # An Discord Account Creator with mullvad auto rotate, fingerprint rotation each account and much more! this creater if fully functional. 
 

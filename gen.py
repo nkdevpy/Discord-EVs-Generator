@@ -20,7 +20,6 @@ import httpx
 import tls_client
 from colorama import Fore, Style, init
 from pystyle import Center
-from rich.console import Console
 import warnings
 import nodriver as uc
 from nodriver import cdp
